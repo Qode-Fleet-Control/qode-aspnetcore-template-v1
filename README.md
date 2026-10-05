@@ -1,130 +1,81 @@
-# fleet-template-v1
+# ASP.NET Core template
 
-## What This Template Is
+Provisioned from [`Qode-Fleet-Control/fleet-template-v1`](https://github.com/Qode-Fleet-Control/fleet-template-v1) — the fleet
+lifecycle contract (`bin/`, `fleet.conf`, `compose.yaml`, deploy workflows) with the stock
+ASP.NET Core Web API (minimal APIs, .NET 10) laid on top.
 
-`fleet-template-v1` is a **language-agnostic app lifecycle harness** for apps
-managed by the fleet platform. It gives any app — Node, Python, Go, a Docker
-Compose stack, anything — a uniform way to be deployed and controlled, without
-the fleet needing to know a single thing about your stack.
+    src/App/            the web API (Program.cs, appsettings*.json, App.http)
+    Dockerfile          SDK build stage -> aspnet:10.0 runtime, non-root
+    compose.yaml        the fleet's docker runtime (service `app`)
+    fleet.conf          the app manifest every bin/ script reads
 
-The fleet injects runtime variables into the environment (`PORT`, `BASE_PATH`,
-`DATABASE_URL`) and calls `./bin/run` to deploy. Everything project-specific —
-how to install, build, and start your app — lives in **one file: `fleet.conf`**.
-That is the only file you edit per project.
+Routes: `GET /` (a tiny JSON status), `GET /health` (ASP.NET Core health checks — the
+fleet's `HEALTH_PATH`), `GET /weatherforecast` (the generator's sample), and `/openapi/v1.json`
+in Development.
 
-## Repository Structure
+## Origin
 
-```
-fleet.conf        ← the only file you edit per project
-.env              ← local-only env vars (gitignored)
-bin/
-  _common.sh      ← shared logic; never edit this
-  run             ← install + build + start (called by the fleet)
-  start           ← start only (no rebuild)
-  restart         ← stop + full run
-  reload          ← hot-reload config without rebuild
-  stop            ← stop the running process
-```
+Generated 2026-10-05 with the official template, inside the official SDK image (.NET SDK 10.0.401):
 
-## The One File You Edit: `fleet.conf`
+    docker run --rm -u $(id -u):$(id -g) -e HOME=/tmp -v "$PWD":/w -w /w \
+      mcr.microsoft.com/dotnet/sdk:10.0 \
+      dotnet new webapi -n App -o src/App --framework net10.0
 
-`fleet.conf` is sourced as shell by the lifecycle scripts. Fill in the commands
-for your stack; leave any command empty (`''`) to skip that step.
+## Running it
 
-```sh
-NAME="my-app"           # label shown in fleet logs
-PORT="3000"             # default port (fleet overrides via $PORT env var)
-HEALTH_PATH="/"         # HTTP path that returns 200 when the app is ready
+**On the fleet** — nothing to do: the fleet clones the repo, injects `PORT` / `DATABASE_URL`, and
+runs `bin/run`, which (docker runtime) does `docker compose build` then
+`docker compose up --remove-orphans` in the foreground. The app listens on `0.0.0.0:$PORT` and
+is served at the root of its own hostname (`https://<hash>.<FLEET_APP_DOMAIN>/`).
 
-INSTALL_CMD='npm ci'
-BUILD_CMD='npm run build'
-START_CMD='node dist/server.js'   # must listen on $PORT; run in foreground
-RELOAD_CMD=''           # optional; empty → falls back to stop+start
-```
+**With docker**
 
-> **Critical rule:** single-quote any command that uses `$PORT` or
-> `$BASE_PATH`. Single quotes defer variable expansion to **runtime** — when the
-> command actually runs, with the fleet-injected value — rather than at the
-> moment `fleet.conf` is sourced (when those values aren't set yet). Use
-> `START_CMD='gunicorn app:app --bind 0.0.0.0:$PORT'`, never double quotes.
+    PORT=8080 bin/run                 # or: docker compose up --build
+    curl http://localhost:8080/health
 
-## How the Lifecycle Works
+**Without docker** (needs the .NET 10 SDK on PATH)
 
-| Script | What it does | When to use |
-| --- | --- | --- |
-| `bin/run` | `INSTALL_CMD` → `BUILD_CMD` → `START_CMD` | Fleet deploy, fresh start |
-| `bin/start` | `START_CMD` only | Restart without rebuild |
-| `bin/restart` | stop + `bin/run` | After a code/dep change |
-| `bin/reload` | `RELOAD_CMD`, or stop+start if empty | After a config-only change |
-| `bin/stop` | Kill by pidfile or port | Tear down |
+    FLEET_RUNTIME=process PORT=8080 bin/run
+    # = dotnet restore src/App/App.csproj
+    #   dotnet publish src/App/App.csproj -c Release --no-restore -o .out
+    #   env PORT=8080 dotnet .out/App.dll
 
-> The process PID is written to `.fleet/app.pid` so subsequent `stop`/`restart`
-> calls can find and terminate it reliably. If the pidfile is missing or stale,
-> `stop` falls back to freeing whatever is listening on `$PORT`.
+or, for development with the generator's launch profile: `dotnet run --project src/App`
+(http://localhost:5046, `ASPNETCORE_ENVIRONMENT=Development`).
 
-## How to Apply This to Your Project
+| step | process runtime | docker runtime |
+|---|---|---|
+| install | `dotnet restore src/App/App.csproj` | — |
+| build | `dotnet publish … -o .out` | `docker compose build` |
+| start | `env PORT="$PORT" dotnet .out/App.dll` | `docker compose up --remove-orphans` |
 
-### Step 1 — Copy the template into your repo
+## Deviations from the stock generator output, and why
 
-```sh
-cp -r fleet-template-v1/* my-project/
-```
+- **Project under `src/App/`, not the repo root.** .NET writes build output to the project's
+  `bin/` and `obj/`; at the root that would collide with the fleet's `bin/` lifecycle scripts.
+- **`Program.cs` binds `http://0.0.0.0:$PORT` when `PORT` is set**, read at runtime. The fleet
+  injects `PORT`; ASP.NET Core does not read that variable on its own. Without `PORT`, Kestrel
+  keeps its usual defaults (launchSettings / `ASPNETCORE_URLS`).
+- **`AddHealthChecks()` + `MapHealthChecks("/health")`** and a `GET /` route: the fleet's
+  health probe, and a root that answers instead of 404.
+- **`UseHttpsRedirection()` moved into the Development block.** On the fleet the edge
+  terminates TLS; the container speaks plain HTTP, so there is no https port to redirect to
+  (the stock line only logged "Failed to determine the https port" on every request).
+- **Dockerfile clears `ASPNETCORE_HTTP_PORTS`** (the aspnet image sets it to 8080), so Kestrel
+  does not warn that `UseUrls` overrides it.
+- Added: `Dockerfile`, `compose.yaml`, `.dockerignore`, a compact `.gitignore` (the stock
+  `dotnet new gitignore` ignores every `bin/` — including the fleet's), `.env.example`,
+  `fleet.conf`, `bin/`, `.github/workflows/`, `docs/fleet-lifecycle.md`.
+- No NuGet lock file: the generator does not create one (`RestorePackagesWithLockFile` is off).
 
-Or, if starting fresh, just clone it and work from `main`.
+## Verified
 
-### Step 2 — Edit `fleet.conf` (the only required change)
+On 2026-10-05, docker 29.8.2:
 
-Fill in your stack's commands. Per-stack examples:
+- `migrate.py audit` → `READY`.
+- `verify.sh <repo> 46201` → `run=200 restart=200 containers_after_stop=0` (bin/run, probe
+  `/health`, bin/restart, probe again, bin/stop).
+- Process runtime, inside `mcr.microsoft.com/dotnet/sdk:10.0`:
+  `FLEET_RUNTIME=process PORT=46202 bin/run` → `/health` 200, `/` and `/weatherforecast` 200.
 
-```sh
-# Node.js
-INSTALL_CMD='npm ci'
-BUILD_CMD='npm run build'
-START_CMD='node dist/index.js'
-
-# Python (Gunicorn)
-INSTALL_CMD='pip install -r requirements.txt'
-BUILD_CMD=''
-START_CMD='gunicorn app:app --bind 0.0.0.0:$PORT'
-
-# Go
-INSTALL_CMD=''
-BUILD_CMD='go build -o ./out/server ./cmd/server'
-START_CMD='./out/server'
-
-# Docker Compose
-INSTALL_CMD=''
-BUILD_CMD='docker compose build'
-START_CMD='docker compose up'
-RELOAD_CMD='docker compose up -d --no-build'
-```
-
-### Step 3 — Set local env vars in `.env` (gitignored)
-
-```sh
-APP_NAME=My App
-DATABASE_URL=postgres://localhost/mydb
-```
-
-### Step 4 — Verify standalone
-
-```sh
-PORT=3001 bin/run      # should install, build, and serve on 3001
-curl http://localhost:3001/   # should 200
-```
-
-### Step 5 — Connect to the fleet
-
-Point the fleet at your repo. It will clone it, inject `PORT` / `BASE_PATH` /
-`DATABASE_URL`, and call `bin/run`. As long as your `START_CMD` listens on
-`$PORT` and `HEALTH_PATH` returns 200, the fleet will mark the app healthy.
-
-## Key Invariants
-
-- **`START_CMD` must run in the foreground and listen on `$PORT`.** Do not use a
-  dev server — HMR / hot-reload chunks 404 behind the ingress and will break the
-  app.
-- **Never put secrets in `fleet.conf`** — it's committed. Use `.env` locally;
-  the fleet injects secrets via the environment.
-- **`bin/_common.sh` is shared infrastructure** — don't edit it per project. All
-  project-specific configuration belongs in `fleet.conf`.
+See `docs/fleet-lifecycle.md` for the lifecycle contract.
