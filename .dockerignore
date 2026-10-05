@@ -1,0 +1,16 @@
+.git
+.github
+.fleet
+.fleet-deploy.log
+*.log
+.env
+.env.*
+!.env.example
+.vs
+.vscode
+.idea
+**/bin/Debug
+**/bin/Release
+**/obj
+.out
+TestResults

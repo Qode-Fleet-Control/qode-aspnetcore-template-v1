@@ -1,3 +1,16 @@
 .env
 .fleet/
 .fleet-deploy.log
+*.log
+
+# --- .NET ---
+# build output lives under each project's bin/ and obj/. NOT a bare `bin/`: the repo-root
+# bin/ holds the fleet lifecycle scripts.
+src/**/bin/
+src/**/obj/
+tests/**/bin/
+tests/**/obj/
+.out/
+TestResults/
+*.user
+.vs/
