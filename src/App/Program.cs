@@ -15,6 +15,37 @@ builder.Services.AddHealthChecks();
 
 var app = builder.Build();
 
+// KEEP THIS: one log line per request (status + duration) is what the workspace Monitoring tab charts.
+// First in the pipeline so it sees every request (health checks, static files, errors) and writes
+// one JSON line to stdout when it finishes, e.g.
+//   {"status":200,"durationMs":0.412,"method":"GET","path":"/health","ua":"curl/8.5.0"}
+// Never the query string, headers other than the user agent, or bodies.
+app.Use(async (ctx, next) =>
+{
+    var sw = System.Diagnostics.Stopwatch.StartNew();
+    var failed = false;
+    try
+    {
+        await next(ctx);
+    }
+    catch
+    {
+        failed = true;
+        throw;
+    }
+    finally
+    {
+        Console.Out.WriteLine(System.Text.Json.JsonSerializer.Serialize(new
+        {
+            status = failed && !ctx.Response.HasStarted ? 500 : ctx.Response.StatusCode,
+            durationMs = Math.Round(sw.Elapsed.TotalMilliseconds, 3),
+            method = ctx.Request.Method,
+            path = (ctx.Request.PathBase + ctx.Request.Path).Value,
+            ua = ctx.Request.Headers.UserAgent.ToString(),
+        }));
+    }
+});
+
 // Configure the HTTP request pipeline.
 if (app.Environment.IsDevelopment())
 {
